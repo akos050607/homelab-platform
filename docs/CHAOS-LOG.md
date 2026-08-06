@@ -23,3 +23,16 @@
   (DNS only). See ADR-005.
 - A1 done. Server was never touched in the Hetzner UI; `terraform state list`
   confirms all three resources are managed.
+
+## 2026-08-06 — A2, Hybrid K3s over Tailscale
+- Goal: Securely join a local edge node to a Hetzner control plane.
+- Incident 1: K3s failed to start on the Hetzner node. `journalctl` showed `VPN Error. The passed VPN auth info includes an unknown parameter: name\`. 
+  - Cause: Bash quote-escaping over SSH mangled the `--vpn-auth` string before systemd could read it.
+  - Fix: Abandoned CLI flags entirely. Wrote a declarative `/etc/rancher/k3s/config.yaml` to bypass shell parsing bugs (See ADR-006).
+- Incident 2: K3s still crashed. `tailscale: command not found`.
+  - Cause: K3s's native Tailscale integration assumes the daemon is already on the host OS; it does not bootstrap it. 
+  - Fix: Ran the Tailscale install script on the host OS as a prerequisite.
+- Incident 3: Spawning the test pod on the edge node failed with `Invalid value: "akos050607-Thin-GF63-12VE": a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters`.
+  - Cause: The laptop's hostname had uppercase letters. K3s quietly converted it to lowercase when registering the node, but the explicit `nodeName` override in the test pod command didn't match.
+  - Fix: Piped `$(hostname)` through `tr '[:upper:]' '[:lower:]'` to match Kubernetes' strict naming requirements.
+- Result: Nodes registered as `Ready`. Cross-node pod ping over the Tailscale overlay succeeded with 0% packet loss. A2 done.

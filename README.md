@@ -13,7 +13,7 @@ repository. That property is the point — see `docs/adr/` for the decisions and
 | Item | State |
 |---|---|
 | A1 · Hetzner server provisioned as code | done |
-| A2 · Hybrid K3s over Tailscale | next |
+| A2 · Hybrid K3s over Tailscale | done |
 
 ## A1
 
