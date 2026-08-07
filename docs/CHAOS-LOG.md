@@ -36,3 +36,17 @@
   - Cause: The laptop's hostname had uppercase letters. K3s quietly converted it to lowercase when registering the node, but the explicit `nodeName` override in the test pod command didn't match.
   - Fix: Piped `$(hostname)` through `tr '[:upper:]' '[:lower:]'` to match Kubernetes' strict naming requirements.
 - Result: Nodes registered as `Ready`. Cross-node pod ping over the Tailscale overlay succeeded with 0% packet loss. A2 done.
+
+## 2026-08-07 — A3, TLS ingress + cert-manager
+- Goal: Secure the cluster front door with automated Let's Encrypt certificates.
+- Incident 1: `helm install cert-manager` stalled infinitely.
+  - Cause: Webhook pod randomly scheduled onto the edge node (laptop). The Kubernetes API server (on the Hetzner node) tried to validate the installation across the Tailscale VPN, but the traffic vanished into a black hole.
+  - Fix: Cancelled the install, wiped the broken state, and used `--set nodeSelector`, `webhook.nodeSelector`, and `cainjector.nodeSelector` to strictly pin all cert-manager components to the `k3s-server`.
+- Incident 2: Let's Encrypt HTTP-01 challenge timed out with `context deadline exceeded`.
+  - Diagnostics: `curl localhost:80` returned a 404 (K3s listening normally), and `ufw status` was inactive. Hetzner Cloud UI confirmed the external firewall was wide open on 80/443.
+  - Cause: The `externalTrafficPolicy: Local` setting on the ingress service. Kube-proxy saw traffic hitting the public `eth0` interface, but the ingress pod was bound to the `tailscale0` VPN interface. Kubernetes incorrectly concluded the pod was non-local and issued an iptables `REJECT`.
+  - Fix: Hot-patched the service to `externalTrafficPolicy: Cluster`.
+- Incident 3: Curling the domain locally returned "No route to host" (Hairpin NAT failure), while curling from a 4G mobile network returned a `504 Gateway Time-out`.
+  - Cause: Nginx (on the Hetzner node) caught the public request, but the Let's Encrypt `cm-acme-http-solver` pod had scheduled onto the edge node. The A2 cross-node Tailscale routing silently dropped the forwarded packet. 
+  - Fix: Executed `kubectl cordon akos050607-thin-gf63-12ve` to temporarily sideline the edge node, then evicted the pods. They rescheduled onto the Hetzner server, Nginx routed the traffic over `localhost`, and the production certificate issued immediately. 
+- A3 done. Green padlock verified on mobile. (Note: A2 Tailscale pod-to-pod routing remains fundamentally broken and requires a dedicated debugging sprint).
