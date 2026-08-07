@@ -57,3 +57,14 @@
 - Adoption: Migrated the manual `test-app` deployment into declarative Git tracking under `homelab-gitops/apps/test-app.yaml`, allowing ArgoCD to assume ownership via live adoption.
 - Drift Correction Demo: Executed a manual out-of-band change (`kubectl scale deployment test-app --replicas=3`). Within the sync window, ArgoCD detected the state drift against the Git declaration and automatically self-healed the deployment back to 1 replica.
 - A4 done. Continuous reconciliation verified.
+## 2026-08-07 — A5, Secrets Management (Sealed Secrets)
+- Goal: Implement GitOps-friendly secrets management to safely commit encrypted credentials to a public repository.
+- Architecture: Bitnami Sealed Secrets controller installed and pinned to the `k3s-server` node. Local encryption handled via the `kubeseal` CLI tool.
+- Incident 1: `helm repo add` and `wget` for the `kubeseal` binary returned `404 Not Found`.
+  - Cause: Bitnami migrated their GitHub repositories and Helm paths from `bitnami-labs/` to `bitnami/`, breaking legacy release URLs.
+  - Fix: Updated the Helm repository pointer and the GitHub release download script to target the new organization paths.
+- Incident 2: ArgoCD UI abruptly dropped connection with `ERR_CONNECTION_REFUSED` while attempting to verify the GitOps sync.
+  - Cause: Switching context/workspaces in VSCode closed the active terminal running the `kubectl port-forward` process, severing the local tunnel to the cluster.
+  - Fix: Re-established the port-forward in a dedicated, persistent terminal tab.
+- Result: Created a plaintext secret, encrypted it offline into a `SealedSecret` manifest, and destroyed the plaintext file. Pushed the ciphertext to the `homelab-gitops` repository. ArgoCD detected the state change, synced the `SealedSecret`, and the in-cluster controller successfully decrypted it back into a native Kubernetes `Secret`.
+- A5 done. Zero plaintext credentials exist in version control.
