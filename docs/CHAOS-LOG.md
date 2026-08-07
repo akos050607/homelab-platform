@@ -50,3 +50,10 @@
   - Cause: Nginx (on the Hetzner node) caught the public request, but the Let's Encrypt `cm-acme-http-solver` pod had scheduled onto the edge node. The A2 cross-node Tailscale routing silently dropped the forwarded packet. 
   - Fix: Executed `kubectl cordon akos050607-thin-gf63-12ve` to temporarily sideline the edge node, then evicted the pods. They rescheduled onto the Hetzner server, Nginx routed the traffic over `localhost`, and the production certificate issued immediately. 
 - A3 done. Green padlock verified on mobile. (Note: A2 Tailscale pod-to-pod routing remains fundamentally broken and requires a dedicated debugging sprint).
+
+## 2026-08-07 — A4, GitOps with ArgoCD
+- Goal: Transition cluster management from push-based imperative commands to pull-based continuous reconciliation.
+- Architecture: Installed ArgoCD in the `argocd` namespace and deployed the "App of Apps" pattern, pointing a root application at a dedicated `homelab-gitops` repository (`apps/` directory).
+- Adoption: Migrated the manual `test-app` deployment into declarative Git tracking under `homelab-gitops/apps/test-app.yaml`, allowing ArgoCD to assume ownership via live adoption.
+- Drift Correction Demo: Executed a manual out-of-band change (`kubectl scale deployment test-app --replicas=3`). Within the sync window, ArgoCD detected the state drift against the Git declaration and automatically self-healed the deployment back to 1 replica.
+- A4 done. Continuous reconciliation verified.
