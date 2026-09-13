@@ -1,0 +1,101 @@
+name: image
+
+# Builds the demo workload in app/ and publishes it to GitHub Container
+# Registry. This is the build half of the pipeline only — it pushes an image
+# and stops there. Nothing here deploys: the cluster is reconciled by Argo CD
+# from homelab-gitops, and the Kubernetes API server is not reachable from the
+# internet anyway (ADR-004). See ADR-007.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/image.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The one permission that must be widened, and only for the registry push.
+  # GITHUB_TOKEN is scoped to this repository and expires with the run, so no
+  # long-lived registry credential exists in the repository secrets.
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/homelab-demo
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Skipped on pull requests: a PR from a fork gets a read-only token, and
+      # an unreviewed PR should not be able to publish an image under this
+      # account's namespace.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          # NOTE: deliberately not `enable={{is_default_branch}}`. This
+          # repository's GitHub default branch is still `master` (stale, at the
+          # A1 commit) while all work happens on `main`, so the built-in helper
+          # would never tag latest. Comparing the ref explicitly is correct
+          # until the default branch is fixed.
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          # `go vet` and `go test` run inside the Dockerfile, so an image that
+          # exists is an image whose tests passed — a property a separate CI
+          # job cannot guarantee, since anyone can build locally and push.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Pushed"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Pull with:"
+            echo '```bash'
+            echo "docker pull ${{ env.IMAGE }}:${{ github.sha }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
