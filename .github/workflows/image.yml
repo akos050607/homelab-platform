@@ -1,20 +1,25 @@
 name: image
 
-# Builds the demo workload in app/ and publishes it to GitHub Container
-# Registry. This is the build half of the pipeline only — it pushes an image
-# and stops there. Nothing here deploys: the cluster is reconciled by Argo CD
-# from homelab-gitops, and the Kubernetes API server is not reachable from the
-# internet anyway (ADR-004). See ADR-007.
+# Builds the container workloads in this repository and publishes them to
+# GitHub Container Registry. This is the build half of the pipeline only — it
+# pushes images and stops there. Nothing here deploys: the cluster is reconciled
+# by Argo CD from homelab-gitops, and the Kubernetes API server is not reachable
+# from the internet anyway (ADR-004). See ADR-007.
+#
+# Two workloads, one job, driven by a matrix rather than a copy of the job per
+# image. Adding a third is one line.
 
 on:
   push:
     branches: [main]
     paths:
       - 'app/**'
+      - 'oidc-demo/**'
       - '.github/workflows/image.yml'
   pull_request:
     paths:
       - 'app/**'
+      - 'oidc-demo/**'
       - '.github/workflows/image.yml'
   workflow_dispatch:
 
@@ -29,13 +34,24 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/homelab-demo
-
 jobs:
   build:
+    strategy:
+      # Both images are wanted on every run, not just the first one that breaks.
+      fail-fast: false
+      matrix:
+        include:
+          - context: app
+            image: homelab-demo
+          - context: oidc-demo
+            image: homelab-demo-oidc
+
+    name: ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
 
     steps:
       - uses: actions/checkout@v5
@@ -72,7 +88,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./app
+          context: ./${{ matrix.context }}
           # `go vet` and `go test` run inside the Dockerfile, so an image that
           # exists is an image whose tests passed — a property a separate CI
           # job cannot guarantee, since anyone can build locally and push.
