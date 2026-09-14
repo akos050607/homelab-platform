@@ -285,3 +285,20 @@ inject its defect reports the same "all green" as a pipeline with no gaps.
   have ended with a green tick.
 - Know the limit of your own check and write it down. `render` is worth having
   *and* cannot catch a misspelled key; those are both true.
+
+## 2026-09-14 — B3 and B4, passkey and SAML
+- Goal: passwordless login actually replacing the password step, and a SAML client in the same realm for comparison.
+- Built `browser-passwordless` via the admin API: Username Form -> WebAuthn Passwordless Authenticator, both REQUIRED, password form and the conditional-2FA subflow removed. RP ID `auth.szenassy-akos.com`, user verification required, resident key yes.
+- Deliberately did NOT bind the new flow until a passkey existed. Binding first would have left the only user in the realm with no way to authenticate at all.
+- Incident 5: the realm committed to git was still the bootstrap realm. Everything configured through the admin console — the flow, the WebAuthn policy, the roles mapper, the browser flow binding — existed only in Postgres.
+  - Argo CD reported the ConfigMap `Synced` throughout, and was right: the file matched git. Git had simply stopped describing the running realm.
+  - Consequence if unnoticed: a rebuild from git produces a Keycloak with no passwordless login, which contradicts the rebuild-from-zero property the platform claims.
+  - Fix: `scripts/export-realm.sh` + `scripts/normalise-realm.py`, so re-exporting is one command with a reviewable diff. An export that is a manual clean-up gets done once and then rots.
+  - Verified non-destructively by importing the committed file into a throwaway realm `homelab-verify`, confirming it reproduced browserFlow, the WebAuthn policy and both REQUIRED flow steps, then deleting it. The live realm and the registered passkey were never touched.
+- Incident 6: after merging the export, Argo CD reported `Synced` **at the correct commit SHA** while the cluster still held the previous 1787-byte ConfigMap. Not a stale revision — the right revision with stale content.
+  - Found by checking the object (`kubectl get cm ... | wc -c`) rather than the dashboard. A hard refresh corrected it: 1787 -> 61616 bytes.
+  - Worth separating from the earlier stale-revision case: that one sounds like a caching detail. This one reported the right answer to "which commit" and the wrong answer to "what is deployed".
+- Incident 7: the SAML `/saml/acs` endpoint pretty-printed assertions by decoding and re-encoding with `encoding/xml`. Output was valid XML and completely wrong — Go's encoder does not preserve namespace prefixes, so `<samlp:Response>` became `<Response xmlns="...">` with an invented `_xmlns:samlp="xmlns"` attribute.
+  - This is the canonicalisation problem demonstrated by accident. A SAML signature covers exact bytes; any semantically-equivalent re-serialisation breaks it. Re-serialising with a general-purpose XML library is precisely the classic mistake.
+  - Fix: `indentXML` now only inserts whitespace between `>` and `<`, never re-parses, and a test asserts the document is byte-identical once whitespace is stripped.
+- Three incidents in two days with the same shape (5, 6, and the orphaned Ingress in ADR-010): a green dashboard says the things being watched are healthy. It does not say that what is present is what was declared.

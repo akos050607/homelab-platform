@@ -187,3 +187,40 @@ func TestIndentXMLHandlesSAMLShape(t *testing.T) {
 		t.Fatal("expected indented output")
 	}
 }
+
+// The property that matters: indenting must not REWRITE the document. A SAML
+// signature covers exact bytes, so a namespace prefix that survives display but
+// not re-serialisation is the classic way to break signature validation.
+// encoding/xml fails this test, which is why it is not used.
+func TestIndentXMLPreservesNamespacePrefixesAndTags(t *testing.T) {
+	in := []byte(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+		`xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="a1">` +
+		`<saml:Issuer>https://auth.example.test</saml:Issuer>` +
+		`<saml:Assertion ID="a2"><saml:NameID Format="persistent">akos</saml:NameID></saml:Assertion>` +
+		`</samlp:Response>`)
+	out, err := indentXML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, must := range []string{
+		"<samlp:Response", "</samlp:Response>", "<saml:Issuer>", "<saml:Assertion ID=\"a2\">",
+		`xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"`,
+		`Format="persistent"`, "akos",
+	} {
+		if !strings.Contains(got, must) {
+			t.Fatalf("indenting lost %q\n---\n%s", must, got)
+		}
+	}
+	// No invented attributes, and no prefix collapsed into a default namespace.
+	if strings.Contains(got, "_xmlns") {
+		t.Fatalf("indenting invented an attribute:\n%s", got)
+	}
+	// Every original tag must survive byte-identically once whitespace is removed.
+	strip := func(s string) string {
+		return strings.NewReplacer("\n", "", " ", "", "\t", "").Replace(s)
+	}
+	if strip(got) != strip(string(in)) {
+		t.Fatalf("document changed.\nin:  %s\nout: %s", strip(string(in)), strip(got))
+	}
+}
