@@ -286,6 +286,41 @@ inject its defect reports the same "all green" as a pipeline with no gaps.
 - Know the limit of your own check and write it down. `render` is worth having
   *and* cannot catch a misspelled key; those are both true.
 
+## 2026-09-13 — B1, Keycloak + CloudNativePG
+- Goal: Keycloak on the cluster behind TLS, realm configuration in git, database managed by an operator.
+- Decision before writing anything: plain Deployment, not the Keycloak Operator (ADR-008). Every line something I wrote and can explain, at a price recorded in the ADR.
+- Incident 1: planned to substitute the OIDC client secret into the realm JSON with an environment-variable placeholder. Checked before building rather than after.
+  - Wrong hypothesis: Keycloak realm import supports `${ENV}` / `$(env:VAR)` substitution like most config loaders.
+  - Actual: it does not, at all. `kc.sh import` rejects a bare `$` with `Character '$' not allowed`, and plain `--import-realm` silently ignores it. Only the Operator's `spec.placeholders` does substitution natively (keycloak/keycloak#12069, #20199, #26275).
+  - Fix: an initContainer substitutes the sealed values into the JSON and writes the result to an `emptyDir` before Keycloak opens the file. It greps the output for surviving `__PLACEHOLDER__` markers and fails the pod if it finds one — importing a realm whose password is the literal text `__DEMO_USER_PASSWORD__` is a failure that should be loud, not silent.
+  - Worth noting: this cost ten minutes because it was checked first. Building it, deploying it, and finding the client secret was the literal string `${...}` would have cost an evening.
+- Incident 2: `render` CI check failed on the cloudnative-pg chart — 11 × `CustomResourceDefinition failed validation: could not find schema`.
+  - Wrong hypothesis: a misconfigured `-schema-location`, since the CNPG `Cluster` schema resolves fine from the CRDs-catalog.
+  - Actual: `kubernetes-json-schema` publishes **no schema for `CustomResourceDefinition` at all**. Verified rather than assumed — every variant of `customresourcedefinition*.json` returns 404 upstream. kubeconform cannot validate a CRD definition, by design.
+  - Why it had never surfaced: kube-prometheus-stack ships its CRDs in `crds/`, which `helm template` skips entirely. CNPG templates them as ordinary templates, so they land in the render output. First chart in this repo to do so.
+  - Fix: `-skip CustomResourceDefinition`, scoped to the kind rather than reaching for `-ignore-missing-schemas`, and written into the README as a known gap. Resources authored in this repo are still validated.
+- Startup was clean first time: realm imported, TLS issued automatically, no restarts. The one thing I checked deliberately was the `issuer` in the discovery document — `https://auth.szenassy-akos.com/realms/homelab` rather than `http://10.42.0.x:8080/...`, which is the proof that `KC_PROXY_HEADERS=xforwarded` is doing its job. That value ends up inside every token; getting it wrong is not cosmetic.
+- Noted from the startup log, and it is my own documented limitation appearing on screen: `KC-SERVICES0030: Full model import requested. Strategy: IGNORE_EXISTING`. `--import-realm` will not touch a realm that already exists.
+- B1 done.
+
+## 2026-09-14 — B2, OIDC into a first-party app
+- Goal: an application that actually logs in through Keycloak, with the token verification written out rather than delegated.
+- Wrote `oidc-demo` in Go, no dependencies outside the standard library. Twelve tests, and the ones that matter are rejections of well-formed JWTs: foreign signer, `alg` of `none`/`HS256`/`RS512`/empty, a **valid** token issued to a different client of the same realm, wrong issuer, expired, wrong nonce, unknown `kid`.
+- Incident 3: the new Ingress never appeared. Argo CD said `OutOfSync`, everything else `Healthy`.
+  - What I saw: `app.szenassy-akos.com` returning a plain-text page from `nginxdemos/hello` — a workload I deployed on 7 August and had forgotten.
+  - First hypothesis: the Argo CD sync had not run yet. It had.
+  - The actual message, once I read the Application status instead of the resource list: `admission webhook "validate.nginx.ingress.kubernetes.io" denied the request: host "app.szenassy-akos.com" and path "/" is already defined in ingress default/test-ingress`.
+  - Root cause, and it is bigger than the collision: `test-ingress`, `Service/test-app` and `Service/demo-service` were **hand-applied with `kubectl` back in August and never committed**. `apps/test-app.yaml` contains only the Deployment. Argo CD adopted that Deployment and left the other three alone, because `prune: true` can only prune what it tracks. Adoption is not ownership.
+  - So for 38 days Argo CD reported `Synced / Healthy` and was telling the truth about everything it knew about — while three untracked objects sat in the cluster, one of them holding a real rate-limited Let's Encrypt **production** certificate for a hostname nobody meant it to have.
+  - What actually caught it: an admission webhook I did not install, belonging to a component I installed for an unrelated reason. Not CI, which only reads the repository. Not Argo CD, which only reconciles what it tracks. It took a fourth system noticing a hostname collision.
+  - Fix: deleted the three orphans by hand — which is the honest ending, because git cannot express the deletion of something it never owned. Argo CD then created the Ingress on the next sync and cert-manager issued the certificate.
+  - The README said *"Nothing here is applied by hand."* That sentence had been false since 7 August. ADR-010 records the boundary properly.
+- Incident 4: `/me` rendered no `realm_access.roles`, though the realm grants the user `platform-admin`.
+  - Cause: Keycloak puts realm roles in the **access** token by default, not the ID token. Not a bug, a default — and a reasonable one, since the ID token is about identity and the access token is about authorization.
+  - Fix: an explicit protocol mapper on the client with `id.token.claim: true`.
+- Full flow verified end to end with `curl` before touching a browser: `/login` → `code_challenge_method=S256` → Keycloak form → code → back-channel exchange → signature verified → claims rendered.
+- B2 done.
+
 ## 2026-09-14 — B3 and B4, passkey and SAML
 - Goal: passwordless login actually replacing the password step, and a SAML client in the same realm for comparison.
 - Built `browser-passwordless` via the admin API: Username Form -> WebAuthn Passwordless Authenticator, both REQUIRED, password form and the conditional-2FA subflow removed. RP ID `auth.szenassy-akos.com`, user verification required, resident key yes.
