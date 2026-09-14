@@ -11,12 +11,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"html/template"
@@ -368,25 +368,62 @@ func (a *app) handleSAMLACS(w http.ResponseWriter, r *http.Request) {
 	render(w, samlTmpl, map[string]any{"XML": string(pretty), "Bytes": len(decoded), "Version": version})
 }
 
+// indentXML adds line breaks and indentation WITHOUT re-serialising the
+// document. It only ever inserts whitespace between a `>` and the following
+// `<`; every byte of every tag is passed through untouched.
+//
+// The first version of this used encoding/xml to decode and re-encode, which
+// produced valid-looking but different XML: Go's encoder does not preserve
+// namespace prefixes, so `<samlp:Response>` came back as `<Response
+// xmlns="...">` with an invented `_xmlns:samlp="xmlns"` attribute.
+//
+// That is worth keeping as a comment rather than quietly fixing, because it is
+// the whole reason XML signatures are hard. A SAML signature covers the exact
+// bytes of the assertion. Any transformation that produces a semantically
+// equivalent document — reordering attributes, rewriting a namespace prefix,
+// changing whitespace — produces a different byte sequence and therefore breaks
+// the signature. Canonicalisation (c14n) exists to define one normal form so
+// that both sides hash the same bytes, and getting it wrong is the classic
+// source of SAML implementation bugs. Re-serialising with a general-purpose XML
+// library, as the first version did here, is exactly the mistake.
 func indentXML(in []byte) ([]byte, error) {
 	var out strings.Builder
-	dec := xml.NewDecoder(strings.NewReader(string(in)))
-	enc := xml.NewEncoder(&out)
-	enc.Indent("", "  ")
-	for {
-		t, err := dec.Token()
-		if errors.Is(err, io.EOF) {
+	depth := 0
+	for i := 0; i < len(in); {
+		lt := bytes.IndexByte(in[i:], '<')
+		if lt < 0 {
+			out.Write(in[i:])
 			break
 		}
-		if err != nil {
-			return nil, err
+		// Text between tags: emit it only if it is not pure whitespace.
+		if text := bytes.TrimSpace(in[i : i+lt]); len(text) > 0 {
+			out.Write(text)
 		}
-		if err := enc.EncodeToken(t); err != nil {
-			return nil, err
+		i += lt
+		gt := bytes.IndexByte(in[i:], '>')
+		if gt < 0 {
+			out.Write(in[i:])
+			break
 		}
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
+		tag := in[i : i+gt+1]
+		closing := len(tag) > 1 && tag[1] == '/'
+		selfClosing := len(tag) > 2 && tag[len(tag)-2] == '/'
+		decl := len(tag) > 1 && (tag[1] == '?' || tag[1] == '!')
+
+		if closing {
+			depth--
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		for d := 0; d < depth; d++ {
+			out.WriteString("  ")
+		}
+		out.Write(tag)
+		if !closing && !selfClosing && !decl {
+			depth++
+		}
+		i += gt + 1
 	}
 	return []byte(out.String()), nil
 }

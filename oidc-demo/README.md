@@ -83,6 +83,27 @@ It exists so the difference between the two protocols can be *seen*: an
 auto-submitted browser POST carrying signed XML, against a JSON document fetched
 from one well-known URL.
 
+### The indentation bug that is worth keeping as a comment
+
+The first version pretty-printed by decoding with `encoding/xml` and re-encoding
+it. The output was valid XML and completely wrong: Go's encoder does not
+preserve namespace prefixes, so `<samlp:Response>` came back as `<Response
+xmlns="...">` carrying an invented `_xmlns:samlp="xmlns"` attribute.
+
+That is the entire reason XML signatures are difficult. A SAML signature covers
+the **exact bytes** of the assertion. Any transformation producing a
+semantically equivalent document — reordering attributes, rewriting a namespace
+prefix, changing whitespace — produces a different byte sequence and breaks the
+signature. Canonicalisation (c14n) exists to define one normal form so both
+sides hash the same bytes, and re-serialising with a general-purpose XML library
+is exactly the mistake that breaks it.
+
+`indentXML` now only ever inserts whitespace between `>` and `<`; every byte of
+every tag passes through untouched.
+`TestIndentXMLPreservesNamespacePrefixesAndTags` asserts that the document is
+byte-identical once whitespace is stripped, which the `encoding/xml` version
+fails.
+
 ## Configuration
 
 | Variable | Purpose |
